@@ -1,68 +1,78 @@
 #include <stdio.h>
-#include <stdbool.h>
 #include <stdlib.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
 #include <string.h>
-#include <errno.h>
-#include <signal.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <netinet/tcp.h>
 
-#define PORT 5630
 #define BUFFER_SIZE 1024
-#define FILE_NAME "data.txt" // Assume a file named data.txt to be sent
 #define EXIT_FAILURE 1
-#define RECEIVER_IP "127.0.0.1"
 
-int syncTimes(int socket, int loss);
+char *util_generate_random_data(unsigned int size) {     
+    char *buffer = NULL;      
+    // Argument check.     
+    if (size == 0){
+        return NULL;  
+    }         
+       
+    buffer = (char *)calloc(size, sizeof(char));      
+    // Error checking.     
+    if (buffer == NULL) {
+        return NULL;      
 
-char * fileName = "data.txt";
+    }        
+    // Randomize the seed of the random number generator.     
+    srand(time(NULL));      
+    for (unsigned int i = 0; i < size; i++){         
+        *(buffer + i) = ((unsigned int)rand() % 256);  
+    }    
+    return buffer; 
+} 
 
-int main(void) {
-    int sock = -1, fileSize = 0;
-    char *content = NULL;
-    struct sockaddr_in server_addr; // The variable to store the server's address.
+int main(int argc, char** argv) {
 
-    // Read the file
-    FILE *file = fopen(FILE_NAME, "rb");
-    if (file == NULL) {
-        perror("File opening failed");
+    if (argc != 7) {
+        fprintf(stderr, "Invalid command line - it should be: %s -p <port> -algo <algorithm>\n", argv[0]);
         return EXIT_FAILURE;
     }
-    fseek(file, 0L, SEEK_END);
-    fileSize = (int) ftell(file);
-    content = (char*) malloc(fileSize * sizeof(char));
-    fseek(file, 0L, SEEK_SET);
 
-    fread(content, sizeof(char), fileSize, file);
-    fclose(file);
+    char* RECEIVER_IP = argv[2];
 
-    printf("total size is %d bytes.\n", fileSize);
-
-    // Reset the server structure to zeros. 
-    memset(&server_addr, 0, sizeof(server_addr));
-    // Server address
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
-    if (inet_pton(AF_INET, RECEIVER_IP, &server_addr.sin_addr) <= 0) {
-        perror("Invalid address / Address not supported");
-        close(sock);
+    int PORT = atoi(argv[4]);
+    if (PORT <= 0 || PORT > 65535) {
+        fprintf(stderr, "Invalid port number: %s\n", argv[4]);
         return EXIT_FAILURE;
     }
-    // Create socket - if the socket creation failed, print an error message and return 1.
+
+    char *algo = argv[6];
+    if (strcmp(algo, "reno") != 0 && strcmp(algo, "cubic") != 0) {
+        fprintf(stderr, "Invalid algorithm: %s\n", algo);
+        return 1;
+    }
+    socklen_t algo_len = strlen(algo);
+    
+    int sock = -1;
     sock = socket(AF_INET, SOCK_STREAM, 0);
+    // Create socket - if the socket creation failed, print an error message and return 1.
     if (sock == -1) {
         perror("Socket creation failed");
         return EXIT_FAILURE;
     }
-    printf("Socket successfully created.\n");
-    
-    printf("Connected successfully to %s:%d!\n", RECEIVER_IP, PORT);
 
-    //fprintf(stdout, "Connecting to %s:%d...\n", RECEIVER_IP, PORT);
+    if (setsockopt(sock, IPPROTO_TCP, TCP_CONGESTION, algo, algo_len) != 0) {
+        perror("setsockopt");
+        close(sock);
+        return EXIT_FAILURE;
+    }
+    struct sockaddr_in server_addr; // The variable to store the server's address.
+
+    memset(&server_addr, 0, sizeof(server_addr)); // Reset the server structure to zeros. 
+    // Server address
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    server_addr.sin_addr.s_addr = inet_addr(RECEIVER_IP);
 
     // Connect to server
     // Try to connect to the server using the socket and the server structure.
@@ -70,108 +80,56 @@ int main(void) {
         perror("Connection failed");
         close(sock);
         return EXIT_FAILURE;
-    }
+    }    
+    printf("Socket successfully created.\n");
+    printf("Connected successfully to %s:%d!\n", RECEIVER_IP, PORT);
 
-    printf("Successfully connected to the server!\n"
-            "Sending the file to the server\n");
+    while (1) {
+        // create a random file according to the given algorythm in the appendix. the size of the file need to be 2MB.
+        unsigned int f_size = 2 * 1024 * 1024; // 2MB
+        char *data = util_generate_random_data(f_size);
 
-    // Send file
-    //size_t bytes_read = fread(buffer, 1, BUFFER_SIZE, file);
-    
-    //while (bytes_read != 0) {  //???????????
-
-    int sent_file, len=sizeof(int);
-    sent_file= send(sock, &fileSize, sizeof(int), 0);
-    if (sent_file == -1) {
-        perror("Send failed");
-        close(sock);
-        return EXIT_FAILURE;
-    }
-    else if (sent_file==0)
-        printf("Receiver doesn't accept requests.\n");
-
-    else if (sent_file < len)
-        printf("some of the data wasn't sent\n");
-
-    else
-        printf("Total bytes sent is %d.\n", sent_file);
-
-
-    //printf("File sent successfully\n");
-    syncTimes(sock, 0);
-
-    while(1){
-        char decision;
-        printf("Sending the file...\n");
-        int data;
-        data= send(sock, content, fileSize, 0);
-        if (data < 0) {
-            perror("Send failed");
-            close(sock);
-            return EXIT_FAILURE;
+        // Write the file
+        FILE *file = fopen("file.txt", "wb");
+        if (file == NULL) {
+            perror("Opening failed");
+            return EXIT_FAILURE; 
         }
-        else if (data==0)
-            printf("Receiver doesn't accept requests.\n");
+        fwrite(data, sizeof(char), f_size, file);
+        fclose(file);
 
-        else if (data < fileSize)
-            printf("some of the data wasn't sent\n");
+        // Send the file
+        file = fopen("file.txt", "rb");
+        if (file == NULL) {
+            perror("Opening failed");
+            return EXIT_FAILURE; 
+        }
+        char buffer[BUFFER_SIZE];
+        size_t bytes_read;
 
-        else
-            printf("Total bytes sent is %d.\n", data);
+        while ((bytes_read = fread(buffer, sizeof(char), BUFFER_SIZE, file)) > 0) {
+            if (send(sock, buffer, bytes_read, 0) < 0) {
+                perror("Send failed");
+                return EXIT_FAILURE; 
+            }
+        }
 
+        fclose(file);
+        free(data);   // Cleanup
 
-        //printf("File sent successfully\n");
-        syncTimes(sock, 0);
+        // the user needs to decide whether to send the file again or not
+        char des;
         printf("Do you want to send the file again? (y/n): ");
-        scanf(" %c", &decision);
-        syncTimes(sock, 1);
-        syncTimes(sock, 0);
-        if (decision == 'n') {
-            printf("Exiting...\n");
-            break;
+        scanf(" %c", &des);
+        if (des != 'y') {
+            printf("sending an exit message - ready to exit\n");
+            break; // Exit the loop
         }
-        fseek(file, 0L, SEEK_SET);        // Reset file pointer to the beginning of the file
-        fread(content, sizeof(char), fileSize, file);        // Read the file content again
     }
-    printf("Closing connection...\n");
 
     close(sock);
 
-    printf("Memory cleanup...\n");
-    free(content);
-
-    printf("Sender exit.\n");
-
+    printf("The socket colesed- good bye ;)\n");
+    
     return 0;
-
-}
-
-
-int syncTimes(int socket, int loss) {
-    static char x = 0;
-    static int ans = 0;
-
-    if (loss)
-    {
-        ans = send(socket, &x, sizeof(char), 0);
-
-        if (ans == -1){
-            perror("send");
-            return EXIT_FAILURE;
-        }
-        return ans;
-    }
-
-    printf("Waiting for signal from receiver...\n");
-    ans = recv(socket, &x, sizeof(char), 0);
-
-    if (ans == -1)
-    {
-        perror("recv");
-        return EXIT_FAILURE;
-    }
-
-    printf("Continue...\n");
-
-    return ans;
 }
